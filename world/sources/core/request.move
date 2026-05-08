@@ -36,7 +36,7 @@ public(package) fun new(
 /// Used by firmware code to add per-action rules that the action cannot run
 /// without (e.g. `HasItem` on `deposit`), on top of the base + owner-attached
 /// requirements folded in by `interact_module`.
-public fun add_default_requirement(req: &mut Request, r: Requirement) {
+public fun add_requirement(req: &mut Request, r: Requirement) {
     req.requires.push_back(r);
 }
 
