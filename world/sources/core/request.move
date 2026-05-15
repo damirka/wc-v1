@@ -11,42 +11,27 @@ module world::request;
 use std::string::String;
 use world::requirement::Requirement;
 
-#[error(code = 1)]
-const ERequirementsRemain: vector<u8> = b"Cannot complete: requirements remain";
+const VERSION: u64 = 1;
 
+#[error(code = 1)]
+const ERequirementsRemain: vector<u8> = "Cannot complete: requirements remain";
 #[error(code = 2)]
-const ERequirementNotFound: vector<u8> = b"No matching requirement to complete";
+const ERequirementNotFound: vector<u8> = "No matching requirement to complete";
+#[error(code = 3)]
+const EVersionMismatch: vector<u8> = "Request version mismatch";
 
 /// Request is a hot-potato carrying the open requirements for an action.
 public struct Request {
-    action: String, // TODO: having string is vulenrable,  can we have TypeName instead ?
+    action: String, // TODO: having string is vulnerable, can we have TypeName instead ?
+    version: u64,
     structure_id: Option<ID>,
     requires: vector<Requirement>,
-}
-
-public(package) fun new(
-    action: String, 
-    structure_id: Option<ID>,
-    requires: vector<Requirement>, 
-): Request {
-    Request { action, structure_id, requires }
-}
-
-/// Append a firmware default requirement after the request has been opened.
-/// Used by firmware code to add per-action rules that the action cannot run
-/// without (e.g. `HasItem` on `deposit`), on top of the base + owner-attached
-/// requirements folded in by `interact_module`.
-public fun add_requirement(req: &mut Request, r: Requirement) {
-    req.requires.push_back(r);
 }
 
 /// Service-side: tick off the first requirement matching type `T`. Aborts if
 /// none exists. The `Permit<T>` argument means only the declaring module can
 /// call this for `T`.
-public fun complete_requirement<T>(
-    req: &mut Request,
-    _: internal::Permit<T>,
-): Requirement {
+public fun complete_requirement<T>(req: &mut Request, _: internal::Permit<T>): Requirement {
     let idx = req.requires.find_index!(|r| r.is<T>());
     assert!(idx.is_some(), ERequirementNotFound);
     req.requires.swap_remove(idx.destroy_some())
@@ -54,10 +39,75 @@ public fun complete_requirement<T>(
 
 /// Dispose of the hot potato. Aborts if any requirement remains.
 public fun complete(req: Request) {
-    let Request { requires, .. } = req;
+    let Request { requires, version, .. } = req;
     assert!(requires.length() == 0, ERequirementsRemain);
+    assert!(version == VERSION, EVersionMismatch);
 }
 
+/// Get the `version` of the Request.
+public fun version(req: &Request): u64 { req.version }
+
+/// Get the `action` of the Request.
 public fun action(req: &Request): String { req.action }
+
+/// Get the `structure_id` of the Request.
 public fun structure_id(req: &Request): Option<ID> { req.structure_id }
+
+/// Get the length of the requirements vector.
 public fun remaining(req: &Request): u64 { req.requires.length() }
+
+// === Builder API ===
+
+/// A builder for `ApplicationRequest`.
+public struct RequestBuilder {
+    action: String,
+    version: Option<u64>,
+    structure_id: Option<ID>,
+    requires: vector<Requirement>,
+}
+
+/// Initialize a new `RequestBuilder` with the given action.
+public fun new(action: String): RequestBuilder {
+    RequestBuilder {
+        action,
+        structure_id: option::none(),
+        requires: vector[],
+        version: option::none(),
+    }
+}
+
+/// Set the assembly ID of the request.
+public fun with_structure_id(mut builder: RequestBuilder, structure_id: ID): RequestBuilder {
+    builder.structure_id = option::some(structure_id);
+    builder
+}
+
+/// Add a requirement to the request.
+public fun with_requirement(mut builder: RequestBuilder, requirement: Requirement): RequestBuilder {
+    builder.requires.push_back(requirement);
+    builder
+}
+
+/// Set the version of the request. If not set, the default version will be used.
+public fun with_version(mut builder: RequestBuilder, version: u64): RequestBuilder {
+    builder.version.fill(version); // will fail if already set
+    builder
+}
+
+/// Build the `ApplicationRequest` from the builder.
+public fun build(builder: RequestBuilder, _ctx: &mut TxContext): Request {
+    let RequestBuilder { action, structure_id, requires, version } = builder;
+
+    Request {
+        action,
+        requires,
+        structure_id,
+        version: version.destroy_or!(VERSION),
+    }
+}
+
+// === For Testing ===
+
+public(package) fun complete_ignore(r: Request) {
+    let Request { .. } = r;
+}

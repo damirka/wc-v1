@@ -3,27 +3,16 @@
 /// requirement vectors.
 module world::structure;
 
-use world::request::{Self, Request};
-use world::requirement::Requirement;
-use sui::table::{Self, Table};
-use std::type_name::{Self, TypeName};
-use world::system_service::{Self, SystemAuthorization};
-use world::admin_acl::AdminACL;
+use std::string::String;
 use sui::dynamic_field as df;
+use world::{
+    grid::{Self, Grid},
+    location_service,
+    request::{Self, RequestBuilder},
+    requirement::Requirement
+};
 
-// Common requirements for all structures
-public struct StructureConfig has key, store {
-    id: UID,
-    requirements: Table<TypeName, vector<Requirement>>, // can be renamed structure/system requirement
-}
-
-public struct Structure has key {
-    id: UID,
-    owner_cap_id: ID,
-    //requirements: Table<TypeName, vector<Requirement>> // per structure requirements
-}
-
-public struct ModuleKey<phantom T>() has copy, drop, store;
+const VERSION: u64 = 1;
 
 // TODO : move this to a separate module
 public struct OwnerCap has key, store {
@@ -31,105 +20,126 @@ public struct OwnerCap has key, store {
     structure_id: ID,
 }
 
-#[error(code = 0)]
-const ENotAuthorized: vector<u8> = b"Not authorized";
-#[error(code = 2)]
-const EModuleAlreadyAttached: vector<u8> = b"Firmware already attached";
-#[error(code = 3)]
-const EModuleNotAttached: vector<u8> = b"Firmware not attached";
+public struct Module<T> has store {
+    system_requirements: vector<Requirement>,
+    custom_requirements: vector<Requirement>,
+    grid_link: Option<ID>,
+    actions: vector<String>,
+    inner: T,
+}
 
-// This is a action marker typeName for the Anchor action. We need this to add requirements per action
-public struct Anchor has drop {}
+public struct Structure has key {
+    id: UID,
+    owner_cap_id: ID,
+    location_hash: vector<u8>,
+}
 
-#[allow(lint(self_transfer))]
-public fun anchor(cfg: &StructureConfig, ctx: &mut TxContext): (Structure, Request) {
-    let s_uid = object::new(ctx);
-    let s_id  = s_uid.to_inner();
-    let cap = OwnerCap { id: object::new(ctx), structure_id: s_id };
-    let s = Structure { id: s_uid, owner_cap_id: object::id(&cap) };
-    let req = request::new(
-        b"structure:anchor".to_string(),
-        option::some(object::id(&s)),
-        default_requirement<Anchor>(cfg), 
+public struct ModuleKey<phantom T>() has copy, drop, store;
+public struct GridKey() has copy, drop, store;
+
+// === Connectors ===
+
+///
+public(package) fun attach_grid<T: store>(s: &mut Structure, grid: T, ctx: &mut TxContext) {
+    df::add(&mut s.id, GridKey(), grid)
+}
+
+public fun attach_module<T: store>(
+    s: &mut Structure,
+    inner: T,
+    actions: vector<String>,
+    system_requirements: vector<Requirement>,
+    custom_requirements: vector<Requirement>,
+    _ctx: &mut TxContext,
+): RequestBuilder {
+    df::add(
+        &mut s.id,
+        ModuleKey<T>(),
+        Module {
+            system_requirements,
+            custom_requirements,
+            grid_link: option::none(),
+            actions,
+            inner,
+        },
     );
-    transfer::transfer(cap, ctx.sender());
-    (s, req)
+
+    request::new("attach")
+        .with_version(VERSION)
+        .with_structure_id(s.id.to_inner())
+        .with_requirement(location_service::requirement(s.location_hash))
 }
 
-public fun share(s: Structure) {
-    transfer::share_object(s);
+/// Standard trigger for interaction, gives access to the internal T of the Module.
+public fun interact<T: store>(
+    s: &mut Structure,
+    name: String,
+    _: internal::Permit<T>,
+    _ctx: &mut TxContext,
+): (&mut Module<T>, RequestBuilder) {
+    let structure_id = s.id.to_inner();
+    let mut request = request::new(name).with_version(VERSION).with_structure_id(structure_id);
+    let mod = df::borrow_mut<_, Module<T>>(&mut s.id, ModuleKey<T>());
+
+    mod.system_requirements.do_ref!(|req| request = request.with_requirement(*req));
+    mod.custom_requirements.do_ref!(|req| request = request.with_requirement(*req));
+
+    (mod, request)
 }
 
-public fun attach_module<T:  store>(s: &mut Structure, admin_acl: &AdminACL, _: internal::Permit<T>, state: T, ctx: &mut TxContext) {
-    assert!(admin_acl.is_authorized_address(ctx.sender()), ENotAuthorized);
-    let key = ModuleKey<T>();
-    assert!(!df::exists_(&s.id, key), EModuleAlreadyAttached);
-    df::add(&mut s.id, key, state);
+public fun initiate_link<T: store>(
+    s: &mut Structure,
+    to: ID,
+    amt: u32,
+    _: internal::Permit<T>,
+    _ctx: &mut TxContext,
+): (Link, RequestBuilder) {
+    let structure_id = s.id();
+    let mod = df::borrow_mut<_, Module<T>>(&mut s.id, ModuleKey<T>());
+
+    mod.grid_link.fill(to);
+
+    (
+        Link(to, amt),
+        request::new("link")
+            .with_version(VERSION)
+            .with_structure_id(structure_id)
+            .with_requirement(location_service::requirement(s.location_hash)),
+    )
 }
 
-public fun detach_module<T: store>(s: &mut Structure, admin_acl: &AdminACL, _: internal::Permit<T>, ctx: &mut TxContext): T {
-    assert!(admin_acl.is_authorized_address(ctx.sender()), ENotAuthorized);
-    let key = ModuleKey<T>();
-    assert!(df::exists_(&s.id, key), EModuleNotAttached);
-    df::remove<ModuleKey<T>, T>(&mut s.id, key)
+public fun link(s: &mut Structure, link: Link, _ctx: &mut TxContext) {
+    let structure_id = s.id();
+    let g: &mut Grid = df::borrow_mut(&mut s.id, GridKey());
+    let Link(id, amt) = link;
+
+    assert!(structure_id == id);
+    g.reserve(amt);
 }
 
-// can this also made a request ?
-public fun add_requirement<A>(
-    cfg: &mut StructureConfig,
-    acl: &AdminACL,
-    r: Requirement,
-    ctx: &TxContext,
-) {
-    assert!(acl.is_authorized_address(ctx.sender()), ENotAuthorized);
-    let key = type_name::with_original_ids<A>();
-    if (cfg.requirements.contains(key)) {
-        cfg.requirements.borrow_mut(key).push_back(r);
-    } else {
-        cfg.requirements.add(key, vector[r]);
-    };
-}
+// === Accessors ===
 
-public fun remove_requirement<A>(
-    cfg: &mut StructureConfig, acl: &AdminACL, r: Requirement, ctx: &TxContext,
-) {
-    assert!(acl.is_authorized_address(ctx.sender()), ENotAuthorized);
-    let key = type_name::with_original_ids<A>();
-    let reqs = cfg.requirements.borrow_mut(key);
-    let target = r;
-    let idx = reqs.find_index!(|x| x == target);
-    if (idx.is_some()) {
-        reqs.swap_remove(idx.destroy_some());
+public fun id(s: &Structure): ID { object::id(s) }
+
+public fun owner_cap_id(s: &Structure): ID { s.owner_cap_id }
+
+public fun structure_id_of(cap: &OwnerCap): ID { cap.structure_id }
+
+public fun inner<T>(s: &Module<T>): &T { &s.inner }
+
+public fun inner_mut<T>(s: &mut Module<T>): &mut T { &mut s.inner }
+
+// === For Testing ===
+
+public(package) fun new(ctx: &mut TxContext): Structure {
+    Structure {
+        id: object::new(ctx),
+        owner_cap_id: ctx.fresh_object_address().to_id(),
+        location_hash: vector[],
     }
 }
 
-public(package) fun default_requirement<A>(cfg: &StructureConfig): vector<Requirement> {
-    let key = type_name::with_original_ids<A>();
-    if (cfg.requirements.contains(key)) *cfg.requirements.borrow(key)
-    else vector[]
-}
-
-public fun owner_cap_id(s: &Structure): ID { s.owner_cap_id }
-public fun structure_id_of(cap: &OwnerCap): ID { cap.structure_id }
-
-public fun module_state<T:  store>(s: &Structure, _: internal::Permit<T>): &T {
-    df::borrow(&s.id, ModuleKey<T>())
-}
-
-public fun module_state_mut<T:  store>(s: &mut Structure, _: internal::Permit<T>): &mut T {
-    df::borrow_mut(&mut s.id, ModuleKey<T>())
-}
-
-fun init(ctx: &mut TxContext) {
-    let mut cfg = StructureConfig { id: object::new(ctx), requirements: table::new(ctx) };
-    cfg.requirements.add(
-        type_name::with_original_ids<Anchor>(),
-        vector[system_service::requirement()],
-    );
-    transfer::share_object(cfg);
-}
-
-#[test_only]
-public fun init_for_testing(ctx: &mut TxContext) {
-    init(ctx);
+public(package) fun destroy(s: Structure) {
+    let Structure { id, .. } = s;
+    id.delete();
 }

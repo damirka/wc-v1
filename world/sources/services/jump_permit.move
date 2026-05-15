@@ -14,13 +14,13 @@ public struct JumpPermit has key, store {
 }
 
 #[error(code = 0)]
-const EPermitWrongStructure: vector<u8> = b"JumpPermit is for a different structure";
+const EPermitWrongStructure: vector<u8> = "JumpPermit is for a different structure";
 
 public fun requirement(): Requirement {
-    requirement::new<NeedJumpPermit>(vector[])
+    requirement::new<NeedJumpPermit>("")
 }
 
-public fun verify_need_jump_permit(req: &mut Request, jump_permit: &JumpPermit, ctx: &TxContext) {
+public fun verify_need_jump_permit(req: &mut Request, jump_permit: &JumpPermit, _ctx: &TxContext) {
     // TODO: verify that the sender has a jump permit
     assert!(req.structure_id() == option::some(jump_permit.structure_id), EPermitWrongStructure);
     req.complete_requirement<NeedJumpPermit>(internal::permit());
@@ -28,9 +28,8 @@ public fun verify_need_jump_permit(req: &mut Request, jump_permit: &JumpPermit, 
 
 #[test_only]
 public fun mint_jump_permit(structure: &Structure, ctx: &mut TxContext) :JumpPermit {
-    let jump_permit = JumpPermit {
+    JumpPermit {
         id: object::new(ctx),
         structure_id: object::id(structure),
-    };
-    jump_permit
+    }
 }

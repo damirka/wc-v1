@@ -8,21 +8,20 @@ public struct AdminACL has key {
 }
 
 #[error(code = 0)]
-const ENotAuthorized: vector<u8> = b"Not authorized";
+const ENotAuthorized: vector<u8> = "Not authorized";
 
-
-public fun add_authorized_address(admin_acl: &mut AdminACL, address: address, ctx: &TxContext) {
+public fun add_authorized_address(admin_acl: &mut AdminACL, addr: address, ctx: &TxContext) {
     assert!(is_authorized_address(admin_acl, ctx.sender()), ENotAuthorized);
-    admin_acl.authorized_addresses.add(address, true);
+    admin_acl.authorized_addresses.add(addr, true);
 }
 
-public fun remove_authorized_address(admin_acl: &mut AdminACL, address: address, ctx: &TxContext) {
+public fun remove_authorized_address(admin_acl: &mut AdminACL, addr: address, ctx: &TxContext) {
     assert!(is_authorized_address(admin_acl, ctx.sender()), ENotAuthorized);
-    admin_acl.authorized_addresses.remove(address);
+    admin_acl.authorized_addresses.remove(addr);
 }
 
-public fun is_authorized_address(admin_acl: &AdminACL, address: address): bool {
-    admin_acl.authorized_addresses.contains(address)
+public fun is_authorized_address(admin_acl: &AdminACL, addr: address): bool {
+    admin_acl.authorized_addresses.contains(addr)
 }
 
 fun init(ctx: &mut TxContext) {
@@ -32,7 +31,7 @@ fun init(ctx: &mut TxContext) {
 }
 
 #[test_only]
-public fun init_for_testing(ctx: &mut TxContext): AdminACL {
+public fun create_for_testing(ctx: &mut TxContext): AdminACL {
     let mut admin_acl = AdminACL { id: object::new(ctx), authorized_addresses: table::new(ctx) };
     admin_acl.authorized_addresses.add(ctx.sender(), true);
     admin_acl

@@ -10,7 +10,7 @@ use world::admin_acl::AdminACL;
 public struct SystemAuthorization has drop {}
 
 public fun requirement(): Requirement {
-    requirement::new<SystemAuthorization>(vector[])
+    requirement::new<SystemAuthorization>("")
 }
 
 public fun is_authorized(req: &mut Request, admin_acl: &AdminACL, ctx: &TxContext) {
